@@ -1,0 +1,10 @@
+# Python venv / caches
+.venv/
+__pycache__/
+*.pyc
+
+# 大型詞典（8.5MB，繁中 jieba dict；可從來源重新下載）
+dict.txt.big
+
+# macOS
+.DS_Store
