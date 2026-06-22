@@ -32,13 +32,27 @@ FR = 0.05
 
 
 def find_audio(folder):
+    # 音檔可能在集根目錄，或 podcast-toolkit 慣例的 01_母帶 / 02_素材 子資料夾。
+    # 依序找（根目錄優先，向後相容），找到就用該層。
+    search_dirs = [
+        folder,
+        os.path.join(folder, "01_母帶"),
+        os.path.join(folder, "02_素材"),
+    ]
     mix = None
-    for pat in ("Stereo Mix*.wav", "*Stereo*Mix*.wav", "*Mix*.wav"):
-        hits = sorted(glob.glob(os.path.join(folder, pat)))
-        if hits:
-            mix = hits[0]
+    for d in search_dirs:
+        for pat in ("Stereo Mix*.wav", "*Stereo*Mix*.wav", "*Mix*.wav"):
+            hits = sorted(glob.glob(os.path.join(d, pat)))
+            if hits:
+                mix = hits[0]
+                break
+        if mix:
             break
-    raw = sorted(glob.glob(os.path.join(folder, "Track*-Mic*.wav")))
+    raw = []
+    for d in search_dirs:
+        raw = sorted(glob.glob(os.path.join(d, "Track*-Mic*.wav")))
+        if raw:
+            break
     return mix, raw
 
 
