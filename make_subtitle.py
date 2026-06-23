@@ -24,7 +24,8 @@ import numpy as np
 import whisper
 
 from srt_segment import balanced_split, char_width, add_words
-from rhythm_segment import segments_to_words, split_words_to_cues, smooth_spk
+from rhythm_segment import (segments_to_words, split_words_to_cues, smooth_spk,
+                            stabilize_spk)
 
 SR = 16000
 HOSTS_DEFAULT = "郝慧川、惡魔老闆岳啟儒"
@@ -188,6 +189,8 @@ def main():
     words = segments_to_words(result["segments"], label_fn=label_fn)
     if raw_power:
         words = smooth_spk(words, win=0.6)
+        # 去重疊抖動：把短於 0.4s 的孤立講者-run 併入鄰居，避免三人搶話區切碎字
+        words = stabilize_spk(words, min_run=0.4)
     rows = split_words_to_cues(words, max_w=args.max_line,
                                spk_break=bool(raw_power), relabel=bool(raw_power))
     print(f"轉錄 + 節奏式斷句後共 {len(rows)} 句(每句 ≤ {args.max_line:g} 全形字)", flush=True)

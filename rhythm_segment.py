@@ -67,6 +67,53 @@ def smooth_spk(words, *, win=0.6):
     return out
 
 
+def stabilize_spk(words, *, min_run=0.4):
+    """消除過短的講者-run（重疊區逐字麥能量抖動造成的單字翻轉）。
+
+    反覆把「總時長 < min_run 秒」的講者-run 併入較長的相鄰 run（沿用其 spk），
+    避免 spk_break=True 在三人搶話的抖動區把字切碎（如「我/看/你」各成一卡）。
+    乾淨輪流講話的真實換人（turn ≥ min_run）不受影響，仍正常切卡。
+    None spk（無講者標、單軌集）整串原樣回傳。"""
+    if not any(w.get("spk") is not None for w in words):
+        return [dict(w) for w in words]
+    out = [dict(w) for w in words]
+
+    def _dur(w):
+        return max((w.get("end") or 0) - (w.get("start") or 0), 0.0)
+
+    while True:
+        # 依 spk 切連續 run：[i0, i1, spk, 總時長]
+        runs = []
+        for i, w in enumerate(out):
+            sp = w.get("spk")
+            if runs and runs[-1][2] == sp:
+                runs[-1][1] = i
+                runs[-1][3] += _dur(w)
+            else:
+                runs.append([i, i, sp, _dur(w)])
+        # 找最短、有講者、短於門檻、且有可併鄰居的 run
+        target = None
+        for idx, r in enumerate(runs):
+            if r[2] is None or r[3] >= min_run:
+                continue
+            left = runs[idx - 1] if idx > 0 else None
+            right = runs[idx + 1] if idx < len(runs) - 1 else None
+            if not any(x and x[2] is not None for x in (left, right)):
+                continue  # 兩側都無有效講者 → 跳過，避免卡死
+            if target is None or r[3] < runs[target][3]:
+                target = idx
+        if target is None:
+            break
+        # 併入時長較長的鄰居（沿用其 spk）
+        left = runs[target - 1] if target > 0 else None
+        right = runs[target + 1] if target < len(runs) - 1 else None
+        best = max((r for r in (left, right) if r and r[2] is not None),
+                   key=lambda r: r[3])
+        for k in range(runs[target][0], runs[target][1] + 1):
+            out[k]["spk"] = best[2]
+    return out
+
+
 def _majority_spk(run):
     """run 內各字的 spk 取多數（以時長加權），用於 stereo 麥能量貼標去抖動。"""
     from collections import Counter
