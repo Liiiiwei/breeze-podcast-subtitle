@@ -181,12 +181,15 @@ def main():
 
     # 節奏式斷句:照 Whisper 氣口/句界 + 停頓 + 語氣詞斷,接近人工 Fumo 版的節奏
     # (比純 16 字平衡切更接近人工:卡更短、邊界落在語氣轉折上)。
-    # stereo 混音逐字麥能量會抖動 → 先時間域多數濾波,每卡再取多數講者(不切斷詞)。
+    # stereo 混音逐字麥能量會抖動 → 先時間域多數濾波(smooth_spk)去抖。
+    # 有原始麥(raw_power)時 spk_break=True:在「講者變換處」也切卡,讓一問一答
+    # 不會被併進同一張卡(如「有賺到錢嗎沒有」拆成「有賺到錢嗎」+「沒有」兩張、各標講者)。
+    # 內容仍是高品質 stereo 連續轉錄,只是斷點多了一條「換人就換卡」。
     words = segments_to_words(result["segments"], label_fn=label_fn)
     if raw_power:
         words = smooth_spk(words, win=0.6)
     rows = split_words_to_cues(words, max_w=args.max_line,
-                               spk_break=False, relabel=bool(raw_power))
+                               spk_break=bool(raw_power), relabel=bool(raw_power))
     print(f"轉錄 + 節奏式斷句後共 {len(rows)} 句(每句 ≤ {args.max_line:g} 全形字)", flush=True)
 
     out_plain = os.path.join(folder, f"{name}_字幕.srt")
