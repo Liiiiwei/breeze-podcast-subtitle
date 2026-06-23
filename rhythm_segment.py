@@ -80,8 +80,8 @@ def _majority_spk(run):
     return c.most_common(1)[0][0] if c else (run[0].get("spk") if run else None)
 
 
-def split_words_to_cues(words, *, max_w=16.0, gap_break=0.40,
-                        particle_gap=0.18, spk_break=True, relabel=False):
+def split_words_to_cues(words, *, max_w=16.0, gap_break=0.80,
+                        particle_gap=0.60, spk_break=True, relabel=False):
     """words: [{'w','start','end','spk'}]（時間秒，spk 可為 None）。
     回傳 [(start, end, spk, text)]。
 
