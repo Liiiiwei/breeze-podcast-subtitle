@@ -24,8 +24,7 @@ import numpy as np
 import whisper
 
 from srt_segment import balanced_split, char_width, add_words
-from rhythm_segment import (segments_to_words, split_words_to_cues, smooth_spk,
-                            stabilize_spk)
+from rhythm_segment import segments_to_words, split_words_to_cues
 
 SR = 16000
 HOSTS_DEFAULT = "郝慧川、惡魔老闆岳啟儒"
@@ -123,6 +122,32 @@ def split_segment(seg, max_w):
     return out
 
 
+def hysteresis_spk(words, raw_power, labels, margin=4.0):
+    """逐字遲滯貼講者標：用三軌能量比，但「新軌要比目前講者大 margin dB 才換」。
+
+    取代「逐字瞬時 argmax + smooth_spk」——後者在快問快答 / 串音峰值處會單字翻轉，
+    害同一人被切成不同講者、一問一答的句尾掉到別人那卡（驗證見 podcast-toolkit session：
+    這種誤判直接消失、a/b 在 c 獨白裡亂跳大減）。margin 越大越黏（越不容易換人）。
+    """
+    cur = None
+    out = []
+    for w in words:
+        nw = dict(w)
+        s, e = w.get("start"), w.get("end")
+        if s is None or e is None or not raw_power:
+            out.append(nw)
+            continue
+        db = [window_db(rp, s, e) for rp in raw_power]
+        loud = int(np.argmax(db))
+        if cur is None:
+            cur = loud
+        elif loud != cur and db[loud] - db[cur] > margin:
+            cur = loud
+        nw["spk"] = labels[cur]
+        out.append(nw)
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--dir", required=True, help="該集資料夾")
@@ -182,15 +207,14 @@ def main():
 
     # 節奏式斷句:照 Whisper 氣口/句界 + 停頓 + 語氣詞斷,接近人工 Fumo 版的節奏
     # (比純 16 字平衡切更接近人工:卡更短、邊界落在語氣轉折上)。
-    # stereo 混音逐字麥能量會抖動 → 先時間域多數濾波(smooth_spk)去抖。
+    # 貼講者標：逐字麥能量瞬時 argmax 會抖（快問快答/串音峰值處單字翻轉）→ 改用遲滯
+    # hysteresis_spk（新軌要比目前講者大 4dB 才換），同一人不再被切成不同講者。
     # 有原始麥(raw_power)時 spk_break=True:在「講者變換處」也切卡,讓一問一答
     # 不會被併進同一張卡(如「有賺到錢嗎沒有」拆成「有賺到錢嗎」+「沒有」兩張、各標講者)。
     # 內容仍是高品質 stereo 連續轉錄,只是斷點多了一條「換人就換卡」。
     words = segments_to_words(result["segments"], label_fn=label_fn)
     if raw_power:
-        words = smooth_spk(words, win=0.6)
-        # 去重疊抖動：把短於 0.4s 的孤立講者-run 併入鄰居，避免三人搶話區切碎字
-        words = stabilize_spk(words, min_run=0.4)
+        words = hysteresis_spk(words, raw_power, labels, margin=4.0)
     rows = split_words_to_cues(words, max_w=args.max_line,
                                spk_break=bool(raw_power), relabel=bool(raw_power))
     print(f"轉錄 + 節奏式斷句後共 {len(rows)} 句(每句 ≤ {args.max_line:g} 全形字)", flush=True)
