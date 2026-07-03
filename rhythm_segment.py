@@ -11,10 +11,15 @@
 """
 import re
 
-from srt_segment import balanced_split, char_width
+from srt_segment import balanced_split, char_width, word_break_ok
 
 # 句末語氣詞 / 標點（其後是好的斷點）
 _PARTICLE_END = set("的了嗎呢吧啊喔噢啦嘛呀耶欸哦囉嘍，。、！？；：")
+
+# run 硬斷點的詞界校正（snap）門檻：斷點兩側 gap 小於門檻＝不是真氣口，才校正。
+# gap 大代表真停頓（氣口），切在那裡是對的，不動。
+SEG_SNAP_GAP = 0.35   # whisper seg 邊界斷／語氣詞斷（word 邊界常把雙字詞拆成兩個 word）
+SPK_SNAP_GAP = 0.60   # 講者變更斷（stereo 麥能量貼標本來就抖，放寬）
 
 
 def _run_to_chars(words):
@@ -114,6 +119,80 @@ def stabilize_spk(words, *, min_run=0.4):
     return out
 
 
+def _snap_runs_to_word_boundary(runs, reasons, *, seg_snap_gap=SEG_SNAP_GAP,
+                                spk_snap_gap=SPK_SNAP_GAP):
+    """把 run 硬斷點校正到 jieba 詞界，修「跨卡切詞」（然/後、耳/機、尤/其是…）。
+
+    runs：word-dict list 的 list；reasons[i]：runs[i] 與 runs[i+1] 間的斷點成因
+    （'seg'／'spk'／'gap'／'particle'）。
+
+    規則：
+      - 只在斷點兩側時間 gap < 門檻時才動（gap 大＝真氣口，保留原斷點）：
+        seg/particle 斷用 seg_snap_gap；spk 斷用 spk_snap_gap；gap 斷（本身 ≥ gap_break）永不校正。
+      - 兩個 run 的文字接起來跑 jieba，若有 ≥2 字的詞跨越斷點 →
+        把斷點移到該詞的起點或終點：移動字數較少的那側；平手 → 整個詞歸後段。
+      - 只搬「整個 word tuple」（時間戳跟著字走）；湊不出剛好的字數（whisper 給了
+        跨詞界的多字 word）→ 放棄該處校正。搬過去的字，講者標籤改採目標 run 的講者。
+    """
+    thr_map = {"seg": seg_snap_gap, "particle": seg_snap_gap, "spk": spk_snap_gap}
+    for i in range(len(runs) - 1):
+        a, b = runs[i], runs[i + 1]
+        thr = thr_map.get(reasons[i]) if i < len(reasons) else None
+        if thr is None or not a or not b:
+            continue
+        a_end = a[-1].get("end")
+        b_start = b[0].get("start")
+        gap = (b_start - a_end) if (a_end is not None and b_start is not None) else 0.0
+        if gap >= thr:
+            continue                                  # 真氣口 → 保留
+        a_text = "".join((w.get("w") or "").strip() for w in a)
+        b_text = "".join((w.get("w") or "").strip() for w in b)
+        pts = word_break_ok(a_text + b_text)
+        pos = len(a_text)
+        if pts is None or pos in pts:
+            continue                                  # 沒 jieba／本來就在詞界 → 不動
+        prev_pt = max(p for p in pts if p < pos)      # 跨界詞的起點
+        next_pt = min(p for p in pts if p > pos)      # 跨界詞的終點
+        m_left = pos - prev_pt                        # 從 A 尾搬 m_left 字去 B（整詞歸後段）
+        m_right = next_pt - pos                       # 從 B 頭搬 m_right 字來 A（整詞歸前段）
+
+        def _take(words_, m, from_tail):
+            """從 run 尾／頭湊「剛好 m 個字」的整批 word tuple；湊不齊或會搬空回 None。"""
+            got, cnt = [], 0
+            src = reversed(words_) if from_tail else iter(words_)
+            for w in src:
+                if cnt >= m:
+                    break
+                got.append(w)
+                cnt += len((w.get("w") or "").strip())
+            if cnt != m or len(got) >= len(words_):
+                return None
+            return list(reversed(got)) if from_tail else got
+
+        # 移動字數較少的那側優先；平手 → 整個詞歸後段（A 尾搬去 B）
+        plans = sorted([("left", m_left), ("right", m_right)],
+                       key=lambda x: (x[1], 0 if x[0] == "left" else 1))
+        for side, m in plans:
+            if side == "left":
+                mv = _take(a, m, from_tail=True)
+                if mv is None:
+                    continue
+                tgt_spk = b[0].get("spk")
+                mv = [dict(w, spk=tgt_spk) for w in mv]
+                runs[i] = a[:len(a) - len(mv)]
+                runs[i + 1] = mv + b
+            else:
+                mv = _take(b, m, from_tail=False)
+                if mv is None:
+                    continue
+                tgt_spk = a[-1].get("spk")
+                mv = [dict(w, spk=tgt_spk) for w in mv]
+                runs[i] = a + mv
+                runs[i + 1] = b[len(mv):]
+            break
+    return [r for r in runs if r]
+
+
 def _majority_spk(run):
     """run 內各字的 spk 取多數（以時長加權），用於 stereo 麥能量貼標去抖動。"""
     from collections import Counter
@@ -128,7 +207,9 @@ def _majority_spk(run):
 
 
 def split_words_to_cues(words, *, max_w=16.0, gap_break=0.80,
-                        particle_gap=0.60, spk_break=True, relabel=False):
+                        particle_gap=0.60, spk_break=True, relabel=False,
+                        snap=True, seg_snap_gap=SEG_SNAP_GAP,
+                        spk_snap_gap=SPK_SNAP_GAP):
     """words: [{'w','start','end','spk'}]（時間秒，spk 可為 None）。
     回傳 [(start, end, spk, text)]。
 
@@ -139,9 +220,12 @@ def split_words_to_cues(words, *, max_w=16.0, gap_break=0.80,
 
     spk_break=False：忽略 spk 變更當斷點（stereo 用，逐字麥能量會抖動）。
     relabel=True：每個 cue 的 spk 改取 run 內多數（stereo 用，去抖動）。
+    snap=True：run 硬斷點落在 jieba 詞中間、且兩側 gap 小（非真氣口）時，
+    把斷點校正到詞界（見 _snap_runs_to_word_boundary），修「跨卡切詞」。
     """
-    # 1) 先把 words 切成 runs
+    # 1) 先把 words 切成 runs（並記下每個斷點的成因，供詞界校正判斷門檻）
     runs = []
+    reasons = []              # reasons[i] = runs[i] 與 runs[i+1] 之間的斷點成因
     cur = []
     prev_end = None
     prev_spk = None
@@ -155,18 +239,19 @@ def split_words_to_cues(words, *, max_w=16.0, gap_break=0.80,
         seg = w.get("seg")
         st = w.get("start")
         gap = (st - prev_end) if (st is not None and prev_end is not None) else 0.0
-        brk = False
+        reason = None
         if cur:
             if seg is not None and prev_seg is not None and seg != prev_seg:
-                brk = True   # Whisper segment 邊界 = 偵測到的氣口/句界
+                reason = "seg"       # Whisper segment 邊界 = 偵測到的氣口/句界
             elif spk_break and spk != prev_spk:
-                brk = True
+                reason = "spk"
             elif gap >= gap_break:
-                brk = True
+                reason = "gap"
             elif prev_tail and prev_tail[-1] in _PARTICLE_END and gap >= particle_gap:
-                brk = True
-        if brk:
+                reason = "particle"
+        if reason:
             runs.append(cur)
+            reasons.append(reason)
             cur = []
         cur.append(w)
         prev_end = w.get("end") if w.get("end") is not None else st
@@ -175,6 +260,12 @@ def split_words_to_cues(words, *, max_w=16.0, gap_break=0.80,
         prev_tail = txt
     if cur:
         runs.append(cur)
+
+    # 1.5) 詞界校正：run 內容定案後才切卡（要在 balanced_split 之前做）
+    if snap and len(runs) > 1:
+        runs = _snap_runs_to_word_boundary(runs, reasons,
+                                           seg_snap_gap=seg_snap_gap,
+                                           spk_snap_gap=spk_snap_gap)
 
     # 2) 每個 run 套 balanced_split 上限切，產出 cue
     out = []
