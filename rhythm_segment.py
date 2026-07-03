@@ -289,15 +289,23 @@ def split_words_to_cues(words, *, max_w=16.0, gap_break=0.80,
 def segments_to_words(segments, *, label_fn=None):
     """Whisper result['segments'] → 扁平 word list（含 spk）。
     label_fn(start, end) -> spk 字串（可選，stereo 模式用麥能量貼標）。
-    無 word_timestamps 的 segment 退回整段當一個 word。"""
+    無 word_timestamps 的 segment 退回整段當一個 word。
+
+    欄位 schema 對齊 asr_dump.py 的 seg_words()：
+      seg = 來源 segment 序號（Whisper 氣口/句界，斷句時當硬斷點）
+      p   = 逐字後驗機率；alp = segment avg_logprob；nsp = no_speech_prob
+    這樣 make_subtitle.py dump 的 word 快取可直接餵 build_from_cache.py 迭代斷句。"""
     words = []
-    for seg in segments:
+    for sid, seg in enumerate(segments):
+        alp = seg.get("avg_logprob")
+        nsp = seg.get("no_speech_prob")
         segwords = seg.get("words") or []
         if not segwords:
             txt = (seg.get("text") or "").strip()
             if txt:
                 s, e = seg["start"], seg["end"]
-                words.append({"w": txt, "start": s, "end": e,
+                words.append({"w": txt, "start": s, "end": e, "seg": sid,
+                              "p": None, "alp": alp, "nsp": nsp,
                               "spk": label_fn(s, e) if label_fn else None})
             continue
         for w in segwords:
@@ -306,6 +314,7 @@ def segments_to_words(segments, *, label_fn=None):
                 continue
             s = w.get("start", seg["start"])
             e = w.get("end", seg["end"])
-            words.append({"w": t, "start": s, "end": e,
+            words.append({"w": t, "start": s, "end": e, "seg": sid,
+                          "p": w.get("probability"), "alp": alp, "nsp": nsp,
                           "spk": label_fn(s, e) if label_fn else None})
     return words

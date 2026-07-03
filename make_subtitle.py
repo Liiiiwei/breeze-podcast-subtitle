@@ -17,6 +17,7 @@
 """
 import argparse
 import glob
+import json
 import os
 import re
 
@@ -215,6 +216,16 @@ def main():
     words = segments_to_words(result["segments"], label_fn=label_fn)
     if raw_power:
         words = hysteresis_spk(words, raw_power, labels, margin=4.0)
+
+    # 逐字 word 快取:轉錄+講者標籤定案後就落地(schema 同 asr_dump.py)。
+    # 之後調斷句參數用 build_from_cache.py 讀這份秒出 SRT,不必重轉錄 ~1hr。
+    cache_path = os.path.join(folder, f"{name}_字幕_words.json")
+    payload = {"mode": "stereo", "dir": folder, "limit": args.limit,
+               "prompt": prompt, "n_words": len(words), "words": words}
+    with open(cache_path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False)
+    print(f"✅ 逐字快取 {len(words)} 字 → {cache_path}", flush=True)
+
     rows = split_words_to_cues(words, max_w=args.max_line,
                                spk_break=bool(raw_power), relabel=bool(raw_power))
     print(f"轉錄 + 節奏式斷句後共 {len(rows)} 句(每句 ≤ {args.max_line:g} 全形字)", flush=True)
