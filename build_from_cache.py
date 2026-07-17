@@ -3,7 +3,7 @@
 
 用法：
   python build_from_cache.py cache.json out_plain.srt [out_labeled.srt]
-        [--max-w 16] [--gap 0.40] [--particle-gap 0.18] [--corrections corrections_syy.json]
+        [--max-w 16] [--gap 0.40] [--particle-gap 0.18] [--corrections corrections.json]
 """
 import argparse
 import json

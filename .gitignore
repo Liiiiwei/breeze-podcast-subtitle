@@ -6,5 +6,9 @@ __pycache__/
 # 大型詞典（8.5MB，繁中 jieba dict；可從來源重新下載）
 dict.txt.big
 
+# 逐集/私人校對檔與跑批腳本（本機保留，不進公開 repo）
+corrections_*.json
+run_*_both.sh
+
 # macOS
 .DS_Store
