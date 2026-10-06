@@ -262,11 +262,16 @@ def main():
     ap.add_argument("--out", required=True)
     ap.add_argument("--limit", type=float, default=None)
     ap.add_argument("--prompt", default=PROMPT)
+    # 模型比較用：預設仍是 breeze-asr-25，比較時可填 large-v3 / large-v2（openai-whisper 官方權重）
+    # 或任意 .pt 路徑。其餘解碼參數（language/prompt/word_timestamps…）完全不變，
+    # 只換權重 → 對照組唯一變因就是模型本身。
+    ap.add_argument("--model", default="breeze-asr-25",
+                    help="whisper 模型名或 .pt 路徑（預設 breeze-asr-25；比較用填 large-v3 / large-v2）")
     args = ap.parse_args()
 
     folder = os.path.abspath(args.dir)
-    print("載入 Breeze-ASR-25（CPU）…", flush=True)
-    model = whisper.load_model("breeze-asr-25", device="cpu")
+    print(f"載入模型 {args.model}（CPU）…", flush=True)
+    model = whisper.load_model(args.model, device="cpu")
 
     if args.mode == "stereo":
         words = run_stereo(folder, model, args.limit, args.prompt)
