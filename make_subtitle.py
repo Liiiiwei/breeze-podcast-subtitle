@@ -32,29 +32,46 @@ HOSTS_DEFAULT = "郝慧川、惡魔老闆岳啟儒"
 FR = 0.05
 
 
-def find_audio(folder):
+def _search_dirs(folder):
     # 音檔可能在集根目錄，或 podcast-toolkit 慣例的 01_母帶 / 02_素材 子資料夾。
-    # 依序找（根目錄優先，向後相容），找到就用該層。
-    search_dirs = [
+    return [
         folder,
         os.path.join(folder, "01_母帶"),
         os.path.join(folder, "02_素材"),
     ]
-    mix = None
-    for d in search_dirs:
+
+
+def find_mix(folder):
+    # 依序找主混音（根目錄優先，向後相容）；找不到回 None（呼叫端可改用 --audio 指定）。
+    for d in _search_dirs(folder):
         for pat in ("Stereo Mix*.wav", "*Stereo*Mix*.wav", "*Mix*.wav"):
             hits = sorted(glob.glob(os.path.join(d, pat)))
             if hits:
-                mix = hits[0]
-                break
-        if mix:
-            break
-    raw = []
-    for d in search_dirs:
+                return hits[0]
+    return None
+
+
+def find_mics(folder, exclude=None):
+    """分軌講者音檔。優先原慣例 Track*-Mic*.wav；找不到則退回「同層所有 .wav
+    排除主混音，≥2 支才算分軌」——讓任意命名的多軌也能貼講者標。
+
+    講者標只看排序位置（Mic1/Mic2…，見 main() 的 labels），不看檔名編號，
+    故只要排序穩定、檔名任意皆可。不足 2 軌就回 []（維持原本「無法貼標」行為）。
+    """
+    exclude = os.path.abspath(exclude) if exclude else None
+    for d in _search_dirs(folder):
         raw = sorted(glob.glob(os.path.join(d, "Track*-Mic*.wav")))
         if raw:
-            break
-    return mix, raw
+            return raw
+    # 放寬 fallback：命名不符原慣例時，同層 ≥2 支 .wav（排除主混音）即視為分軌
+    for d in _search_dirs(folder):
+        wavs = sorted(
+            p for p in glob.glob(os.path.join(d, "*.wav"))
+            if os.path.abspath(p) != exclude
+        )
+        if len(wavs) >= 2:
+            return wavs
+    return []
 
 
 def frame_power(audio):
@@ -158,13 +175,22 @@ def main():
     ap.add_argument("--limit", type=float, default=None)
     ap.add_argument("--max-line", type=float, default=16.0, help="每句最長全形字數,過長自動拆")
     ap.add_argument("--quiet", action="store_true", help="關閉進度條(給 UI 用)")
+    ap.add_argument("--audio", default="", help="主混音檔路徑；給了就直接用、跳過檔名搜尋")
     args = ap.parse_args()
 
     folder = os.path.abspath(args.dir)
     name = os.path.basename(folder.rstrip(os.sep)) or "output"
-    mix, raw = find_audio(folder)
+    # 主混音：呼叫端（podcast-toolkit）用 --audio 指定實際路徑 → 不受檔名慣例限制；
+    # 純 CLI 直跑未給 --audio 時，退回 *Mix*.wav 檔名搜尋（向後相容）。
+    if args.audio and os.path.isfile(args.audio):
+        mix = os.path.abspath(args.audio)
+    else:
+        mix = find_mix(folder)
     if not mix:
-        raise SystemExit(f"❌ 在 {folder} 找不到 Stereo Mix 音檔")
+        raise SystemExit(
+            f"❌ 在 {folder} 找不到主混音音檔（可用 --audio 指定路徑，或把檔案命名為 *Mix*.wav）"
+        )
+    raw = find_mics(folder, exclude=mix)
     print(f"混音: {os.path.basename(mix)}")
     print(f"原始麥: {len(raw)} 軌" + (" → 會貼講者標籤" if len(raw) >= 2 else " → 無法貼標"))
 
